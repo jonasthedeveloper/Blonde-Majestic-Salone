@@ -1,0 +1,50 @@
+# --- Secrets / environment (keep .env.example tracked) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Local databases, journals & backups (private data) ---
+/data/*
+!/data/.gitkeep
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- Private uploads (keep the folder placeholder) ---
+/uploads/*
+!/uploads/.gitkeep
+
+# --- Generated owner login credentials (also inside data/, belt & braces) ---
+FIRST-RUN-ADMIN-LOGIN.txt
+
+# --- Freebuff Desktop project marker (do not commit) ---
+.freebuff/
+
+# --- Local review screenshots / artifacts ---
+/checks/
+
+# --- Python caches / virtual environments / dependency dirs ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+node_modules/
+
+# --- Logs / temp / OS & editor files ---
+*.log
+*.tmp
+*.temp
+*.swp
+*~
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
