@@ -1,4 +1,7 @@
 'use strict';
+/* ---------- motion: js gate + image fade-in (part of the shipped app, no preview/dev-only behavior) ---------- */
+document.documentElement.classList.add('js');
+['load', 'error'].forEach(ev => document.addEventListener(ev, e => { const t = e.target; if (t && t.tagName === 'IMG') t.classList.add('ri'); }, true));
 /* ---------- tiny helpers ---------- */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -122,8 +125,16 @@ function gallery(files, name) {
 let revObs = null;
 function revealScan() {
   const v = view(); if (!v || RM() || !('IntersectionObserver' in window)) return;
-  if (!revObs) revObs = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('rev-in'); revObs.unobserve(e.target); } }), { rootMargin: '0px 0px -6% 0px', threshold: .05 });
-  [...v.children].forEach(el => { if (el.dataset.rev) return; el.dataset.rev = '1'; el.classList.add('rev'); revObs.observe(el); });
+  if (!revObs) revObs = new IntersectionObserver(es => es.forEach(e => {
+    if (!e.isIntersecting) return;
+    const el = e.target; revObs.unobserve(el); el.classList.add('rev-in');
+    // drop the reveal styles once they have played so each element's own transition
+    // (card hover, stat hover, etc.) is not overridden by .rev.rev-in afterwards
+    setTimeout(() => { el.classList.remove('rev', 'rev-in'); el.style.transitionDelay = ''; }, 640 + (parseInt(el.style.transitionDelay) || 0));
+  }), { rootMargin: '0px 0px -6% 0px', threshold: .05 });
+  const watch = (el, i) => { if (el.dataset.rev) return; el.dataset.rev = '1'; if (i) el.style.transitionDelay = Math.min(i, 6) * 55 + 'ms'; el.classList.add('rev'); revObs.observe(el); };
+  [...v.children].forEach(el => { if (!el.dataset.rev && !el.classList.contains('grid')) watch(el, 0); });
+  $$('.grid', v).forEach(g => [...g.children].forEach((c, i) => watch(c, i))); // staggered cards in every grid
 }
 
 /* ---------- router ---------- */
