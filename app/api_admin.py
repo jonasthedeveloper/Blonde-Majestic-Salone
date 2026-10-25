@@ -97,7 +97,7 @@ def upload(req):
 # ---------- service categories / services ----------
 crud("categories", "categories", {
     "name": lambda d: text(d, "name", 80, True, "Category name"), "description": lambda d: text(d, "description", 300),
-    "sort": lambda d: int(number(d, "sort", minv=0) or 0), "active": lambda d: flag(d, "active", 1)}, "sort,id")
+    "image": img, "sort": lambda d: int(number(d, "sort", minv=0) or 0), "active": lambda d: flag(d, "active", 1)}, "sort,id")
 
 
 def services_decorate(rows):

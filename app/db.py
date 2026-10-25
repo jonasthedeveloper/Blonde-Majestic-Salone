@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS users(
  active INTEGER NOT NULL DEFAULT 1, can_chat INTEGER NOT NULL DEFAULT 0, staff_id INTEGER, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', sort INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', image TEXT DEFAULT '', sort INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS services(id INTEGER PRIMARY KEY, category_id INTEGER NOT NULL REFERENCES categories(id), name TEXT NOT NULL,
  description TEXT DEFAULT '', price REAL, duration_min INTEGER, image TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1, avail_days TEXT DEFAULT '[0,1,2,3,4,5,6]', sort INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS staff(id INTEGER PRIMARY KEY, name TEXT NOT NULL, specialty TEXT DEFAULT '', bio TEXT DEFAULT '', image TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1, sort INTEGER DEFAULT 0);
@@ -151,6 +151,9 @@ PRODUCT_CATS = ["Hair Care", "Nail Care", "Skin Care", "Beauty", "Accessories", 
 
 def init():
     conn().executescript(SCHEMA)
+    # Migration: CREATE TABLE IF NOT EXISTS is a no-op on databases created before a column existed.
+    if "image" not in [r["name"] for r in all("PRAGMA table_info(categories)")]:
+        run("ALTER TABLE categories ADD COLUMN image TEXT DEFAULT ''")
     for k, v in DEFAULT_SETTINGS.items():   # add missing keys only; never overwrite admin edits
         if k not in settings():
             set_setting(k, v)
