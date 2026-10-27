@@ -1,0 +1,82 @@
+name: Deploy to PythonAnywhere
+
+# Pushing to main uploads the code to PythonAnywhere and reloads the live web app.
+# The data/ database and uploads/ images are intentionally NOT in git, so a deploy can
+# never overwrite the live database or the uploaded images.
+#
+# Repository secrets required (Settings -> Secrets and variables -> Actions):
+#   PA_USERNAME  - PythonAnywhere username
+#   PA_API_TOKEN  - PythonAnywhere -> Account -> API token
+#   PA_DOMAIN     - e.g. username.pythonanywhere.com
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: pythonanywhere-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload code, reload the live web app, verify it answers
+        env:
+          PA_USERNAME: ${{ secrets.PA_USERNAME }}
+          PA_API_TOKEN: ${{ secrets.PA_API_TOKEN }}
+          PA_DOMAIN: ${{ secrets.PA_DOMAIN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${PA_USERNAME:-}" ] || [ -z "${PA_API_TOKEN:-}" ] || [ -z "${PA_DOMAIN:-}" ]; then
+            echo "::notice::PythonAnywhere secrets are not configured yet - skipping deploy."
+            exit 0
+          fi
+
+          API="https://api.pythonanywhere.com/api/v0"
+          AUTH=(-H "Authorization: token ${PA_API_TOKEN}")
+          REMOTE="/home/${PA_USERNAME}/Blonde-Majestic-Salone"
+          BASE="${API}/user/${PA_USERNAME}"
+
+          # Production environment for the live site (non-secret configuration only).
+          # Uploaded only when absent, so anything added later on the host is preserved.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${REMOTE}/.env" || true)
+          if [ "$code" != "200" ]; then
+            printf 'SECURE_COOKIES=1\nTZ_OFFSET_HOURS=4\n' > /tmp/production.env
+            curl -sS "${AUTH[@]}" -F "content=@/tmp/production.env" \
+              "${BASE}/files/path${REMOTE}/.env" > /dev/null
+            echo "created production .env"
+          else
+            echo "keeping the existing .env on the server"
+          fi
+
+          # Upload every tracked file. data/ and uploads/ are gitignored, so the live
+          # database and uploaded images are never touched by a deploy.
+          count=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            curl -sS "${AUTH[@]}" -F "content=@${f}" \
+              "${BASE}/files/path${REMOTE}/${f}" > /dev/null
+            count=$((count + 1))
+            sleep 2   # stay under the API's 40 requests/minute rate limit
+          done < <(git ls-files)
+          echo "uploaded ${count} files"
+
+          curl -sS "${AUTH[@]}" -X POST "${BASE}/webapps/${PA_DOMAIN}/reload/" > /dev/null
+          echo "reload requested, waiting for the site..."
+
+          for i in $(seq 1 36); do
+            status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://${PA_DOMAIN}/api/public" || true)
+            if [ "$status" = "200" ]; then
+              echo "live: https://${PA_DOMAIN} answered 200"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "::error::The site did not answer 200 after reload (last status: ${status:-none})."
+          exit 1

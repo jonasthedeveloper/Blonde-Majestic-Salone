@@ -57,7 +57,9 @@ blonde-majestic-salon/
 ├── .env.example          # Configuration template
 ├── .gitignore            # Excludes private and generated files
 ├── README.md             # Project documentation
-├── server.py             # Application entry point
+├── .github/workflows/    # Auto-deploy to PythonAnywhere on push
+├── server.py             # Local development entry point
+├── wsgi_app.py           # Production entry point (WSGI, used by PythonAnywhere)
 ├── start.bat             # Windows launcher
 └── start.sh              # macOS/Linux launcher
 ```
@@ -182,6 +184,86 @@ Review and configure the following in the admin dashboard:
 - SMS settings, if you intend to use SMS notifications.
 
 Verify all business details before accepting real bookings.
+
+## Free Cloud Hosting (PythonAnywhere)
+
+The live site runs in the cloud, so it stays online when the laptop is off. The local
+server and Cloudflare Tunnel are now development-only tools.
+
+**Why PythonAnywhere's free tier instead of Render's free tier:**
+
+- Render's free filesystem is *ephemeral* — every redeploy or restart would delete the
+  SQLite database and the uploaded images, and Render's free Postgres expires after 30
+  days and then deletes its data.
+- PythonAnywhere's free account has a persistent 512 MiB home directory (the database
+  and images live there), free HTTPS, no credit card, no time-limited trial, and the web
+  app keeps running without a laptop.
+
+**Free-tier limitations to be aware of:**
+
+- No credit card, and the plan is free rather than a trial.
+- One web worker: concurrent visitors queue behind each other.
+- A web app unused for one month expires — log into PythonAnywhere at least monthly and
+  extend the app. Visits and crawler traffic do **not** count as use.
+- Free plan is username.pythonanywhere.com only (no custom domain).
+- Production is served through `wsgi_app.py`; `server.py` remains the local dev server.
+
+### One-time setup
+
+1. Create a free account at <https://www.pythonanywhere.com/registration/register/beginner/>.
+2. Dashboard → **Add a new web app** → *Manual configuration* → Python 3.12 (or the newest 3.x).
+3. On the **Web** tab, click **WSGI configuration file** and replace its contents with:
+
+   ```python
+   import sys
+   sys.path.insert(0, "/home/<username>/Blonde-Majestic-Salone")
+   from wsgi_app import application
+   ```
+
+4. In a PythonAnywhere **Bash console**:
+
+   ```bash
+   cd ~ && git clone https://github.com/jonasthedeveloper/Blonde-Majestic-Salone.git
+   ```
+
+5. Upload the live data **once** — it is deliberately not in git: copy `data/salon.db`
+   and everything in `uploads/` into `~/Blonde-Majestic-Salone/` (Files tab, drag & drop).
+   After that they persist across restarts, reloads and every future deploy.
+6. On the Web tab enable **Redirect HTTP to HTTPS** (needed because production runs with
+   `SECURE_COOKIES=1`), then click **Reload**. The site answers at
+   `https://<username>.pythonanywhere.com`.
+
+### Automatic deployment from GitHub
+
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) deploys every push to `main`.
+Add these repository secrets (**Settings → Secrets and variables → Actions**):
+
+| Secret | Value |
+|---|---|
+| `PA_USERNAME` | your PythonAnywhere username |
+| `PA_API_TOKEN` | PythonAnywhere → Account → API token |
+| `PA_DOMAIN` | e.g. `username.pythonanywhere.com` |
+
+Workflow: VS Code → `git push` → GitHub → upload + reload → live site.
+Deploys upload only *tracked* files, so the live database and uploaded images are never
+overwritten (and production `.env` settings are created only if they do not exist yet).
+
+### Optional: serve static files directly
+
+For faster page loads, add these static file mappings on the Web tab so images and assets
+do not consume the single free worker (paths assume the clone in the home directory):
+
+- `/uploads/` → `/home/<username>/Blonde-Majestic-Salone/uploads/`
+- `/css/` → `/home/<username>/Blonde-Majestic-Salone/public/css/`
+- `/js/` → `/home/<username>/Blonde-Majestic-Salone/public/js/`
+- `/favicon.svg` → `/home/<username>/Blonde-Majestic-Salone/public/favicon.svg`
+- `/manifest.webmanifest` → `/home/<username>/Blonde-Majestic-Salone/public/manifest.webmanifest`
+
+### Laptop offline test
+
+With the setup above, all of these hold: laptop off, VS Code closed, XAMPP stopped and
+Cloudflare Tunnel stopped — the site stays hosted because it runs on PythonAnywhere's
+servers. [start-public.bat](start-public.bat) remains only for sharing a *local* build.
 
 ## Security and Deployment
 
