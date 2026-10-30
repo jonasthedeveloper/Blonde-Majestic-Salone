@@ -1,5 +1,9 @@
 """Public, authentication and customer endpoints."""
+import datetime as dt
 import json
+import re
+import secrets
+import sys
 from . import db, security, booking, notify, ai, uploads, config
 from .web import route, ApiError, text, number, flag, EMAIL_RX, valid_phone, DATE_RX
 
@@ -266,6 +270,96 @@ def change_password(req):
     db.run("UPDATE users SET password_hash=? WHERE id=?", (security.hash_password(new), req.user["id"]))
     db.run("DELETE FROM sessions WHERE user_id=? AND token_hash!=?", (req.user["id"], security._th(req.token)))
     return {"ok": True}
+
+
+# ---------------- password reset ----------------
+GENERIC_SENT = "If an account with that email exists, a password reset link has been sent."
+RESET_INVALID = "Your password reset link is invalid or has expired. Please request a new password reset link."
+RESET_TTL_BOUNDS = (5, 24 * 60)   # minutes: never shorter than 5, never longer than a day
+
+
+def _expiry(minutes):
+    """Expiry timestamp in the same local-time format the rest of the database uses."""
+    n = dt.datetime.strptime(db.now_str(), "%Y-%m-%d %H:%M:%S") + dt.timedelta(minutes=minutes)
+    return n.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _reset_url(req, token):
+    """Absolute link to the reset page. PUBLIC_BASE_URL wins so production links can
+    never depend on a client-supplied Host header."""
+    base = config.PUBLIC_BASE_URL
+    if not base:
+        host = (req.headers.get("Host") or "").strip()
+        if not re.match(r"^[A-Za-z0-9.\-]+(:\d+)?$", host):
+            host = ""
+        https = config.SECURE_COOKIES or (req.headers.get("X-Forwarded-Proto", "").lower() == "https")
+        base = ("https://" if https else "http://") + host if host else ""
+    # The site is a hash-routed SPA, so the link must carry "#/" or it would land on Home.
+    return (base or "") + "/#/reset-password/" + token
+
+
+@route("POST", "/api/auth/forgot")
+def forgot_password(req):
+    d = req.json()
+    mail = text(d, "email", 120, True, "Email address").lower()
+    if not EMAIL_RX.match(mail):
+        raise ApiError(400, "Please enter a valid email address.")
+    if req.ip and security.rate_limited("forgot:ip:" + req.ip, 10, 3600):
+        raise ApiError(429, "Too many requests. Please try again later.")
+    if security.rate_limited("forgot:" + mail, 5, 3600):
+        raise ApiError(429, "Too many requests. Please try again later.")
+    u = db.one("SELECT * FROM users WHERE email=? AND active=1", (mail,))
+    if not u:                      # same response as a real account: no enumeration
+        return {"ok": True, "message": GENERIC_SENT}
+    token = secrets.token_urlsafe(32)          # 256 bits, cryptographically random
+    ttl = max(RESET_TTL_BOUNDS[0], min(int(config.RESET_TTL_MINUTES), RESET_TTL_BOUNDS[1]))
+    db.run("UPDATE password_resets SET used=1 WHERE user_id=? AND used=0", (u["id"],))  # newest link wins
+    db.run("INSERT INTO password_resets(user_id,token_hash,expires,created) VALUES(?,?,?,?)",
+           (u["id"], security._th(token), _expiry(ttl), db.now_str()))
+    ok, detail = notify.send_password_reset(u["email"], u["name"], _reset_url(req, token), ttl)
+    if not ok:
+        # Never echo the reason to the client (it must look identical either way).
+        print("password-reset email not sent: %s" % detail, file=sys.stderr)
+    return {"ok": True, "message": GENERIC_SENT}
+
+
+@route("GET", "/api/auth/reset/<token>")
+def check_reset_token(req):
+    """Lets the reset page tell the visitor immediately that an opened link is dead."""
+    token = req.params.get("token", "")
+    if req.ip and security.rate_limited("resetcheck:" + req.ip, 30, 300):
+        raise ApiError(429, "Too many attempts. Please wait a few minutes and try again.")
+    valid = bool(re.match(r"^[A-Za-z0-9_\-]{20,200}$", token))
+    row = db.one("SELECT used, expires FROM password_resets WHERE token_hash=?", (security._th(token),)) if valid else None
+    valid = bool(row and not row["used"] and row["expires"] > db.now_str())
+    return {"valid": valid}
+
+
+@route("POST", "/api/auth/reset")
+def reset_password(req):
+    d = req.json()
+    token = text(d, "token", 200, True, "Token")
+    pw, confirm = str(d.get("password") or ""), str(d.get("confirm") or "")
+    if req.ip and security.rate_limited("reset:ip:" + req.ip, 15, 300):
+        raise ApiError(429, "Too many attempts. Please wait a few minutes and try again.")
+    if not re.match(r"^[A-Za-z0-9_\-]{20,200}$", token):
+        raise ApiError(400, RESET_INVALID)
+    if len(pw) < 8:
+        raise ApiError(400, "Password must be at least 8 characters.")
+    if pw != confirm:
+        raise ApiError(400, "Passwords do not match.")
+    row = db.one("SELECT * FROM password_resets WHERE token_hash=?", (security._th(token),))
+    if not row or row["used"] or row["expires"] <= db.now_str():
+        raise ApiError(400, RESET_INVALID)
+    u = db.one("SELECT * FROM users WHERE id=? AND active=1", (row["user_id"],))
+    if not u:
+        raise ApiError(400, RESET_INVALID)
+    with db.tx() as c:
+        if c.execute("UPDATE password_resets SET used=1 WHERE id=? AND used=0", (row["id"],)).rowcount != 1:
+            raise ApiError(400, RESET_INVALID)          # lost the race: another request used it first
+        c.execute("UPDATE users SET password_hash=? WHERE id=?", (security.hash_password(pw), u["id"]))
+        c.execute("DELETE FROM sessions WHERE user_id=?", (u["id"],))   # existing sessions end
+    return {"ok": True, "message": "Your password has been reset. You can now sign in."}
 
 
 # ---------------- customer area ----------------

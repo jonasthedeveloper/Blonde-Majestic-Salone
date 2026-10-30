@@ -106,6 +106,10 @@ CREATE TABLE IF NOT EXISTS ai_knowledge(id INTEGER PRIMARY KEY, keywords TEXT NO
 CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT DEFAULT '', link TEXT DEFAULT '', is_read INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_notif_user ON notifications(user_id,is_read);
 CREATE TABLE IF NOT EXISTS sms_log(id INTEGER PRIMARY KEY, to_number TEXT, body TEXT, status TEXT, detail TEXT, created TEXT);
+CREATE TABLE IF NOT EXISTS password_resets(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ token_hash TEXT NOT NULL, expires TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_reset_token ON password_resets(token_hash);
+CREATE INDEX IF NOT EXISTS ix_reset_user ON password_resets(user_id);
 """
 
 DEFAULT_SETTINGS = {

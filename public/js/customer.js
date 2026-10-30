@@ -193,7 +193,7 @@ route('/login', async (_, q) => {
   const draw = () => {
     put(view(), wrap(html`<div style="max-width:460px;margin:auto"><h1 style="font-size:2.6rem">${mode === 'login' ? 'Welcome back' : 'Create your account'}</h1><div class="tabs"><button class="${mode === 'login' ? 'on' : ''}" data-m="login">Sign in</button><button class="${mode === 'register' ? 'on' : ''}" data-m="register">Create account</button></div><div id="err"></div>
       <form id="af" class="card pad" novalidate>${mode === 'register' ? html`<label class="fld"><span>Full name</span><input name="name" autocomplete="name" required></label><label class="fld"><span>Mobile number</span><input name="phone" type="tel" autocomplete="tel" placeholder="+971 5X XXX XXXX" required></label>` : ''}
-      <label class="fld"><span>Email</span><input name="email" type="email" autocomplete="email" required></label><label class="fld"><span>Password ${mode === 'register' ? html`<small>(at least 8 characters)</small>` : ''}</span><input name="password" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required></label><button class="btn gold block">${mode === 'login' ? 'Sign in' : 'Create account'}</button></form>
+      <label class="fld"><span>Email</span><input name="email" type="email" autocomplete="email" required></label><label class="fld"><span>Password ${mode === 'register' ? html`<small>(at least 8 characters)</small>` : ''}</span><input name="password" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required></label>${mode === 'login' ? html`<div style="text-align:right;margin:-4px 0 14px"><a class="small" href="#/forgot-password" style="font-weight:500;color:var(--plum)">Forgot password?</a></div>` : ''}<button class="btn gold block">${mode === 'login' ? 'Sign in' : 'Create account'}</button></form>
       <p class="small muted center" style="margin-top:14px">Salon owner or staff? Sign in here too — you’ll be taken to the admin panel.</p></div>`));
     $('.tabs').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { mode = b.dataset.m; draw(); } };
     $('#af').onsubmit = async e => {
@@ -203,6 +203,57 @@ route('/login', async (_, q) => {
   }; draw();
 });
 async function logout() { try { await api('/api/auth/logout', { method: 'POST', body: {} }); } catch (e) { } App.user = null; App.unread = 0; App.mode = null; go('/'); render(); }
+
+/* ---------- forgot / reset password ---------- */
+const RESET_INVALID_MSG = 'Your password reset link is invalid or has expired. Please request a new password reset link.';
+route('/forgot-password', (_, q) => {
+  if (App.user) return go(q.next || '/account');
+  put(view(), wrap(html`<div style="max-width:460px;margin:auto"><h1 style="font-size:2.6rem">Forgot your password?</h1>
+    <p class="muted">Enter your registered email address and we’ll send you instructions to reset your password.</p>
+    <div id="err"></div><div id="ok"></div>
+    <form id="ff" class="card pad" novalidate><label class="fld"><span>Email address</span><input name="email" type="email" autocomplete="email" required></label>
+    <button class="btn gold block">Send Reset Link</button></form>
+    <p class="small muted center" style="margin-top:14px">Remembered it? <a href="#/login">Back to sign in</a></p></div>`));
+  $('#ff').onsubmit = async e => {
+    e.preventDefault(); const btn = $('button.btn', e.target); btn.disabled = true; btn.classList.add('busy');
+    try {
+      const r = await api('/api/auth/forgot', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+      put($('#ok'), html`<div class="notice" role="status">${r.message}<br><span class="small muted">Didn’t get it? Check your spam folder, then <a href="#/login">sign in</a>.</span></div>`);
+      put($('#err'), ''); e.target.remove();
+    } catch (er) { btn.disabled = false; btn.classList.remove('busy'); put($('#err'), html`<div class="form-error">${er.message}</div>`); }
+  };
+});
+route('/reset-password/:token', async ({ token }) => {
+  if (App.user) return go('/account');
+  let state;
+  try { state = await api('/api/auth/reset/' + encodeURIComponent(token)); } catch (e) { state = { valid: false }; }
+  if (!state.valid) {
+    put(view(), wrap(html`<div style="max-width:460px;margin:auto"><h1 style="font-size:2.6rem">Reset password</h1>
+      <div class="form-error" role="alert">${RESET_INVALID_MSG}</div>
+      <div class="card pad" style="display:flex;gap:10px;flex-wrap:wrap"><a class="btn gold" href="#/forgot-password">Request a new link</a><a class="btn ghost" href="#/login">Back to sign in</a></div></div>`));
+    return;
+  }
+  put(view(), wrap(html`<div style="max-width:460px;margin:auto"><h1 style="font-size:2.6rem">Choose a new password</h1>
+    <p class="muted">Enter and confirm your new password. For security this link works only once.</p>
+    <div id="err"></div>
+    <form id="rf" class="card pad" novalidate><label class="fld"><span>New password <small>(at least 8 characters)</small></span><input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+    <label class="fld"><span>Confirm new password</span><input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+    <button class="btn gold block">Reset Password</button></form>
+    <p class="small muted center" style="margin-top:14px"><a href="#/login">Back to sign in</a></p></div>`));
+  $('#rf').onsubmit = async e => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const btn = $('button.btn', e.target);
+    const show = m => put($('#err'), html`<div class="form-error">${m}</div>`);
+    if (!f.password || f.password.length < 8) return show('Password must be at least 8 characters.');
+    if (f.password !== f.confirm) return show('Passwords do not match.');
+    btn.disabled = true; btn.classList.add('busy');
+    try {
+      const r = await api('/api/auth/reset', { method: 'POST', body: { token, password: f.password, confirm: f.confirm } });
+      put(view(), wrap(html`<div style="max-width:460px;margin:auto"><h1 style="font-size:2.6rem">Password updated</h1>
+        <div class="notice" role="status">${r.message}</div>
+        <div class="card pad" style="text-align:center"><a class="btn gold" href="#/login">Sign in</a></div></div>`));
+    } catch (er) { btn.disabled = false; btn.classList.remove('busy'); show(er.message || RESET_INVALID_MSG); }
+  };
+});
 
 /* ---------- account ---------- */
 const TABS = [['profile', 'Profile'], ['appointments', 'Appointments'], ['reviews', 'My reviews'], ['messages', 'Messages'], ['notifications', 'Notifications'], ['settings', 'Settings']];
