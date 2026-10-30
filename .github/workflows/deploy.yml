@@ -173,6 +173,21 @@ jobs:
           echo "live .env - set:${present:- none} - unset:${absent:- none}"
           echo "::notice title=Live server settings::set:${present:- none} | unset:${absent:- none} (password-reset emails need SMTP_HOST and SMTP_USERNAME/SMTP_FROM)"
 
+          # 3b. Reset links must be built from a fixed origin, not from the request Host,
+          #     so a crafted Host header can never point a password-reset email elsewhere.
+          if ! grep -q "^PUBLIC_BASE_URL=..*" /tmp/live.env 2>/dev/null; then
+            printf '\nPUBLIC_BASE_URL=https://%s\n' "${PA_DOMAIN}" >> /tmp/live.env
+            up=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -F "content=@/tmp/live.env" \
+                  "${BASE}/files/path${REMOTE}/.env" || true)
+            case "${up}" in
+              200|201|204)
+                echo "added PUBLIC_BASE_URL=https://${PA_DOMAIN} to the server .env"
+                echo "::notice title=PUBLIC_BASE_URL::added https://${PA_DOMAIN} to the server .env (existing settings kept)" ;;
+              *)
+                echo "::warning title=Could not set PUBLIC_BASE_URL::HTTP ${up} - reset links fall back to the request Host" ;;
+            esac
+          fi
+
           # 4. Upload every tracked file. data/ and uploads/ are gitignored, so the live
           #    database and uploaded images are never touched by a deploy.
           count=0
