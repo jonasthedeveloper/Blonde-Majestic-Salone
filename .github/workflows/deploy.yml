@@ -6,8 +6,12 @@ name: Deploy to PythonAnywhere
 #
 # Repository secrets required (Settings -> Secrets and variables -> Actions):
 #   PA_USERNAME  - PythonAnywhere username
-#   PA_API_TOKEN  - PythonAnywhere -> Account -> API token
+#   PA_API_TOKEN - PythonAnywhere -> Account -> API token
 #   PA_DOMAIN     - e.g. username.pythonanywhere.com
+#
+# Every API result is echoed back as a workflow annotation, so a run that does not
+# actually update the live site says exactly which call failed (bad token, missing
+# path, rejected upload) instead of reporting success.
 
 on:
   push:
@@ -33,8 +37,8 @@ jobs:
           set -euo pipefail
 
           if [ -z "${PA_USERNAME:-}" ] || [ -z "${PA_API_TOKEN:-}" ] || [ -z "${PA_DOMAIN:-}" ]; then
-            echo "::notice::PythonAnywhere secrets are not configured yet - skipping deploy."
-            exit 0
+            echo "::error title=Deploy skipped::PA_USERNAME / PA_API_TOKEN / PA_DOMAIN are not set as repository secrets - no files were uploaded and the live site is unchanged."
+            exit 1
           fi
 
           API="https://api.pythonanywhere.com/api/v0"
@@ -42,33 +46,83 @@ jobs:
           REMOTE="/home/${PA_USERNAME}/Blonde-Majestic-Salone"
           BASE="${API}/user/${PA_USERNAME}"
 
-          # Production environment for the live site (non-secret configuration only).
-          # Uploaded only when absent, so anything added later on the host is preserved.
-          code=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${REMOTE}/.env" || true)
-          if [ "$code" != "200" ]; then
-            printf 'SECURE_COOKIES=1\nTZ_OFFSET_HOURS=4\n' > /tmp/production.env
-            curl -sS "${AUTH[@]}" -F "content=@/tmp/production.env" \
-              "${BASE}/files/path${REMOTE}/.env" > /dev/null
-            echo "created production .env"
-          else
-            echo "keeping the existing .env on the server"
-          fi
+          # 1. Is the token accepted at all? A 401 here explains every later failure.
+          probe=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${REMOTE}" || true)
+          echo "path probe ${REMOTE} -> HTTP ${probe}"
+          case "${probe}" in
+            200) ;;
+            401|403)
+              echo "::error title=PythonAnywhere rejected the API token::GET ${REMOTE} returned HTTP ${probe}. Regenerate the token (Account -> API token) and update the PA_API_TOKEN repository secret."
+              exit 1 ;;
+            *)
+              echo "::warning title=Unexpected API response::GET ${REMOTE} returned HTTP ${probe}" ;;
+          esac
 
-          # Upload every tracked file. data/ and uploads/ are gitignored, so the live
-          # database and uploaded images are never touched by a deploy.
+          # 2. Production environment for the live site (non-secret configuration only).
+          #    Uploaded only when absent, so anything added later on the host is preserved.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${REMOTE}/.env" || true)
+          echo "existing .env -> HTTP ${code}"
+          case "${code}" in
+            200)
+              echo "keeping the existing .env on the server"
+              echo "::notice title=Server .env::already present, left untouched" ;;
+            404)
+              printf 'SECURE_COOKIES=1\nTZ_OFFSET_HOURS=4\n' > /tmp/production.env
+              up=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -F "content=@/tmp/production.env" \
+                    "${BASE}/files/path${REMOTE}/.env" || true)
+              echo "create .env -> HTTP ${up}"
+              if [ "${up}" != "200" ] && [ "${up}" != "201" ] && [ "${up}" != "204" ]; then
+                echo "::error title=Could not create .env::POST returned HTTP ${up}"
+                exit 1
+              fi
+              echo "created production .env" ;;
+            401|403)
+              echo "::error title=PythonAnywhere rejected the API token::reading .env returned HTTP ${code}. Regenerate the token and update PA_API_TOKEN."
+              exit 1 ;;
+            *)
+              echo "::warning title=Unexpected .env response::HTTP ${code}" ;;
+          esac
+
+          # 3. Upload every tracked file. data/ and uploads/ are gitignored, so the live
+          #    database and uploaded images are never touched by a deploy.
           count=0
           while IFS= read -r f; do
             [ -f "$f" ] || continue
-            curl -sS "${AUTH[@]}" -F "content=@${f}" \
-              "${BASE}/files/path${REMOTE}/${f}" > /dev/null
+            up=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -F "content=@${f}" \
+                  "${BASE}/files/path${REMOTE}/${f}" || true)
+            case "${up}" in
+              200|201|204) ;;
+              401|403)
+                echo "::error title=Upload rejected::${f} -> HTTP ${up}. The PA_API_TOKEN is not accepted."
+                exit 1 ;;
+              *)
+                echo "::error title=Upload failed::${f} -> HTTP ${up}"
+                exit 1 ;;
+            esac
             count=$((count + 1))
             sleep 2   # stay under the API's 40 requests/minute rate limit
           done < <(git ls-files)
           echo "uploaded ${count} files"
+          echo "::notice title=Upload complete::${count} files accepted by the PythonAnywhere API"
 
-          curl -sS "${AUTH[@]}" -X POST "${BASE}/webapps/${PA_DOMAIN}/reload/" > /dev/null
+          # 4. Read one file back and compare: proves the code landed where the site serves it.
+          if curl -sS "${AUTH[@]}" -o /tmp/verify.css "${BASE}/files/path${REMOTE}/public/css/styles.css"; then
+            if cmp -s /tmp/verify.css public/css/styles.css; then
+              echo "round-trip verified: public/css/styles.css matches the commit"
+            else
+              echo "::error title=Uploaded code not visible on the server::public/css/styles.css differs from this commit after upload - the web app serves a different directory than ${REMOTE}."
+              exit 1
+            fi
+          else
+            echo "::error title=Could not read back public/css/styles.css::"
+            exit 1
+          fi
+
+          reload=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${BASE}/webapps/${PA_DOMAIN}/reload/" || true)
+          echo "reload ${PA_DOMAIN} -> HTTP ${reload}"
           echo "reload requested, waiting for the site..."
 
+          status="none"
           for i in $(seq 1 36); do
             status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://${PA_DOMAIN}/api/public" || true)
             if [ "$status" = "200" ]; then
@@ -78,5 +132,5 @@ jobs:
             sleep 5
           done
 
-          echo "::error::The site did not answer 200 after reload (last status: ${status:-none})."
+          echo "::error title=Site did not answer after reload::https://${PA_DOMAIN}/api/public returned ${status}"
           exit 1
