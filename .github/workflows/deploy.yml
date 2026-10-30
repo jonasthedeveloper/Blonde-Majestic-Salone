@@ -9,9 +9,11 @@ name: Deploy to PythonAnywhere
 #   PA_API_TOKEN - PythonAnywhere -> Account -> API token
 #   PA_DOMAIN     - e.g. username.pythonanywhere.com
 #
-# The web app directory is discovered from the account instead of being assumed:
-# earlier deploys reported success while every upload returned 404 because the
-# project folder on the host was not the one this workflow was writing to.
+# The API lives on www.pythonanywhere.com (eu. for EU accounts) - api.pythonanywhere.com
+# is a parked page that answers 404 to everything, which made earlier deploys report
+# success while uploading nothing. Every call here checks its HTTP status, the web app
+# folder is read from the web app's own configuration, and one file is read back and
+# compared with the commit before the site is reloaded.
 
 on:
   push:
@@ -19,8 +21,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pythonanywhere-deploy
-  cancel-in-progress: false
+    group: pythonanywhere-deploy
+    cancel-in-progress: false
 
 jobs:
   deploy:
@@ -41,59 +43,83 @@ jobs:
             exit 1
           fi
 
-          API="https://api.pythonanywhere.com/api/v0"
           AUTH=(-H "Authorization: token ${PA_API_TOKEN}")
-          BASE="${API}/user/${PA_USERNAME}"
           HOME_DIR="/home/${PA_USERNAME}"
-          KNOWN="/home/${PA_USERNAME}/Blonde-Majestic-Salone"
 
-          # 1. Is the token accepted at all? A 401 here explains every later failure.
-          probe=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${HOME_DIR}" || true)
-          echo "home probe ${HOME_DIR} -> HTTP ${probe}"
-          case "${probe}" in
-            200) ;;
-            401|403)
-              echo "::error title=PythonAnywhere rejected the API token::GET ${HOME_DIR} returned HTTP ${probe}. Regenerate the token (Account -> API token) and update the PA_API_TOKEN repository secret."
-              exit 1 ;;
-            *)
-              echo "::warning title=Unexpected API response::GET ${HOME_DIR} returned HTTP ${probe}" ;;
-          esac
+          # 1. Pick the API host this account lives on (US or EU).
+          API_HOST=""
+          for h in www eu; do
+            code=$(curl -sS -o /tmp/tree_probe.json -w '%{http_code}' "${AUTH[@]}" \
+                   "https://${h}.pythonanywhere.com/api/v0/user/${PA_USERNAME}/files/tree/?path=${HOME_DIR}" || true)
+            echo "files/tree on ${h}.pythonanywhere.com -> HTTP ${code}"
+            if [ "${code}" = "200" ]; then
+              API_HOST="${h}.pythonanywhere.com"
+              break
+            fi
+          done
+          if [ -z "${API_HOST}" ]; then
+            echo "::error title=PythonAnywhere API not reachable::Neither www nor eu accepted the PA_API_TOKEN for this username (last status ${code}). Regenerate the token (Account -> API token) and update the repository secret."
+            exit 1
+          fi
+          echo "using API host ${API_HOST}"
+          echo "::notice title=PythonAnywhere API::host=${API_HOST}, account home answered 200"
+          API="https://${API_HOST}/api/v0"
+          BASE="${API}/user/${PA_USERNAME}"
 
-          # 2. Find the folder the web app is actually served from: try the folder this
-          #    workflow used to assume, the folder PythonAnywhere creates per domain,
-          #    and every directory in the account home that carries this project.
-          curl -sS "${AUTH[@]}" -o /tmp/home.json "${BASE}/files/path${HOME_DIR}" || true
-          echo "home listing head: $(head -c 300 /tmp/home.json)"
+          # 2. Ask the web app where its code lives, then fall back to the usual folder
+          #    names and whatever is in the account home.
+          curl -sS "${AUTH[@]}" -o /tmp/webapp.json "${BASE}/webapps/${PA_DOMAIN}/" || true
+          curl -sS "${AUTH[@]}" -o /tmp/home.json "${BASE}/files/tree/?path=${HOME_DIR}" || true
+          echo "webapp config head: $(head -c 300 /tmp/webapp.json)"
+          echo "home tree head: $(head -c 300 /tmp/home.json)"
+
           cat > /tmp/discover.py <<'PY'
           import json, sys
-          raw = open("/tmp/home.json", encoding="utf-8", errors="replace").read()
+          home = sys.argv[1]
+          names = []
+
+          def add(path):
+              path = str(path or "").strip().rstrip("/")
+              if not path:
+                  return
+              rest = path[len(home) + 1:] if path.startswith(home + "/") else path.lstrip("/")
+              if rest and "/" not in rest:
+                  names.append(rest)
+
           try:
-              data = json.loads(raw)
+              cfg = json.load(open("/tmp/webapp.json", encoding="utf-8", errors="replace"))
           except Exception:
-              data = []
-          if isinstance(data, dict):
-              data = data.get("files") or data.get("entries") or []
-          out = []
-          for entry in data if isinstance(data, list) else []:
+              cfg = {}
+          if isinstance(cfg, dict):
+              add(cfg.get("source_directory"))
+
+          try:
+              tree = json.load(open("/tmp/home.json", encoding="utf-8", errors="replace"))
+          except Exception:
+              tree = []
+          if isinstance(tree, dict):
+              tree = tree.get("files") or tree.get("entries") or []
+          for entry in tree if isinstance(tree, list) else []:
               if isinstance(entry, dict):
-                  name, kind = entry.get("name"), entry.get("type")
+                  add(entry.get("path") or entry.get("name"))
               else:
-                  name, kind = str(entry), None
-              if name and "/" not in name and kind in (None, "dir"):
-                  out.append(name)
+                  add(entry)
+
+          out = []
+          for n in names:
+              if n not in out:
+                  out.append(n)
           sys.stdout.write("\n".join(out))
           PY
-          mapfile -t extra < <(python3 /tmp/discover.py || true)
+          mapfile -t discovered < <(python3 /tmp/discover.py "${HOME_DIR}" || true)
 
-          candidates=("${PA_DOMAIN}" "Blonde-Majestic-Salone")
-          for n in "${extra[@]}"; do
-            [ -n "$n" ] && candidates+=("$n")
-          done
-          echo "candidate folders: ${candidates[*]}"
+          candidates=("${discovered[@]:-}" "Blonde-Majestic-Salone" "${PA_DOMAIN}")
+          echo "candidate folders: ${candidates[*]:-none}"
 
           REMOTE=""
           report=""
           for name in "${candidates[@]}"; do
+            [ -n "$name" ] || continue
             dir="${HOME_DIR}/${name}"
             code=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${dir}/public/css/styles.css" || true)
             report="${report}${name}:css=${code} "
@@ -103,10 +129,10 @@ jobs:
             fi
           done
           echo "discovery -> ${report}"
-          echo "::notice title=Web app folder discovery::${report}"
+          echo "::notice title=Web app folder::${report}"
 
           if [ -z "${REMOTE}" ]; then
-            echo "::error title=No folder holds this project::No candidate directory contains public/css/styles.css. ${HOME_DIR} may not be the account home, or the project lives somewhere the API cannot see."
+            echo "::error title=No folder holds this project::None of the candidate folders contains public/css/styles.css. The project may live in a subfolder the web app config does not expose."
             exit 1
           fi
           echo "deploying to ${REMOTE}"
@@ -130,9 +156,6 @@ jobs:
                   echo "::error title=Could not create .env::POST ${REMOTE}/.env returned HTTP ${up}"
                   exit 1 ;;
               esac ;;
-            401|403)
-              echo "::error title=PythonAnywhere rejected the API token::reading .env returned HTTP ${code}. Regenerate the token and update PA_API_TOKEN."
-              exit 1 ;;
             *)
               echo "::warning title=Unexpected .env response::HTTP ${code}" ;;
           esac
@@ -160,27 +183,16 @@ jobs:
           echo "::notice title=Upload complete::${count} files accepted by the PythonAnywhere API"
 
           # 5. Read one file back and compare: proves the code landed where the site serves it.
-          if curl -sS "${AUTH[@]}" -o /tmp/verify.css "${BASE}/files/path${REMOTE}/public/css/styles.css"; then
-            if cmp -s /tmp/verify.css public/css/styles.css; then
-              echo "round-trip verified: public/css/styles.css matches the commit"
-            else
-              echo "::error title=Uploaded code not visible on the server::public/css/styles.css differs from this commit after upload - the web app serves a different directory than ${REMOTE}."
-              exit 1
-            fi
+          curl -sS "${AUTH[@]}" -o /tmp/verify.css "${BASE}/files/path${REMOTE}/public/css/styles.css" || true
+          if cmp -s /tmp/verify.css public/css/styles.css; then
+            echo "round-trip verified: public/css/styles.css matches the commit"
           else
-            echo "::error title=Could not read back public/css/styles.css::"
+            echo "::error title=Uploaded code not visible on the server::public/css/styles.css differs from this commit after upload - the web app serves a different directory than ${REMOTE}."
             exit 1
           fi
 
           reload=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${BASE}/webapps/${PA_DOMAIN}/reload/" || true)
           echo "reload ${PA_DOMAIN} -> HTTP ${reload}"
-          case "${reload}" in
-            200|201|204) ;;
-            404)
-              echo "::warning title=Reload endpoint not found::POST /webapps/${PA_DOMAIN}/reload/ returned 404 - the site may keep running the previous code until it restarts." ;;
-            *)
-              echo "::warning title=Reload returned HTTP ${reload}" ;;
-          esac
           echo "reload requested, waiting for the site..."
 
           status="none"
@@ -193,5 +205,5 @@ jobs:
             sleep 5
           done
 
-          echo "::error title=Site did not answer after reload::https://${PA_DOMAIN}/api/public returned ${status}"
+          echo "::error title=Site did not answer after reload::https://${PA_DOMAIN}/api/public returned ${status} (reload HTTP ${reload})"
           exit 1
