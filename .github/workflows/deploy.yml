@@ -160,6 +160,19 @@ jobs:
               echo "::warning title=Unexpected .env response::HTTP ${code}" ;;
           esac
 
+          # 3a. Report which optional settings the live .env has - names only, never values.
+          curl -sS "${AUTH[@]}" -o /tmp/live.env "${BASE}/files/path${REMOTE}/.env" || true
+          present=""; absent=""
+          for k in SECURE_COOKIES PUBLIC_BASE_URL SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_FROM; do
+            if grep -q "^${k}=..*" /tmp/live.env 2>/dev/null; then
+              present="${present} ${k}"
+            else
+              absent="${absent} ${k}"
+            fi
+          done
+          echo "live .env - set:${present:- none} - unset:${absent:- none}"
+          echo "::notice title=Live server settings::set:${present:- none} | unset:${absent:- none} (password-reset emails need SMTP_HOST and SMTP_USERNAME/SMTP_FROM)"
+
           # 4. Upload every tracked file. data/ and uploads/ are gitignored, so the live
           #    database and uploaded images are never touched by a deploy.
           count=0
