@@ -43,6 +43,12 @@ jobs:
           SMTP_PASSWORD_ALT2: ${{ secrets.GMAIL_APP_PASSWORD }}
           SMTP_PASSWORD_ALT3: ${{ secrets.GMAIL_PASSWORD }}
           SMTP_PASSWORD_ALT4: ${{ secrets.APP_PASSWORD }}
+          # Repository *variables* are not masked in logs, so they are only a last-resort
+          # fallback for a value that was saved on the Variables tab by mistake. The value is
+          # never printed either way, and the run reports which tab it came from.
+          SMTP_PASSWORD_VAR: ${{ vars.SMTP_PASSWORD }}
+          SMTP_APP_PASSWORD_VAR: ${{ vars.SMTP_APP_PASSWORD }}
+          GMAIL_APP_PASSWORD_VAR: ${{ vars.GMAIL_APP_PASSWORD }}
           SMTP_USERNAME_VALUE: ${{ secrets.SMTP_USERNAME }}
           SMTP_HOST_VALUE: ${{ secrets.SMTP_HOST }}
           SMTP_PORT_VALUE: ${{ secrets.SMTP_PORT }}
@@ -179,7 +185,7 @@ jobs:
           #     SMTP_PASSWORD or a common alternative name, and Google's display spaces are
           #     stripped, because a pasted "abcd efgh ijkl mnop" would fail to authenticate.
           smtp_pw_v="${SMTP_PASSWORD_VALUE:-}"; smtp_pw_src="SMTP_PASSWORD"
-          for alt in "SMTP_APP_PASSWORD:${SMTP_PASSWORD_ALT1:-}" "GMAIL_APP_PASSWORD:${SMTP_PASSWORD_ALT2:-}" "GMAIL_PASSWORD:${SMTP_PASSWORD_ALT3:-}" "APP_PASSWORD:${SMTP_PASSWORD_ALT4:-}"; do
+          for alt in "SMTP_APP_PASSWORD:${SMTP_PASSWORD_ALT1:-}" "GMAIL_APP_PASSWORD:${SMTP_PASSWORD_ALT2:-}" "GMAIL_PASSWORD:${SMTP_PASSWORD_ALT3:-}" "APP_PASSWORD:${SMTP_PASSWORD_ALT4:-}" "SMTP_PASSWORD (repository variable):${SMTP_PASSWORD_VAR:-}" "SMTP_APP_PASSWORD (repository variable):${SMTP_APP_PASSWORD_VAR:-}" "GMAIL_APP_PASSWORD (repository variable):${GMAIL_APP_PASSWORD_VAR:-}"; do
             alt_name="${alt%%:*}"; alt_val="${alt#*:}"
             if [ -z "${smtp_pw_v}" ] && [ -n "${alt_val}" ]; then
               smtp_pw_v="${alt_val}"; smtp_pw_src="${alt_name}"
@@ -188,7 +194,7 @@ jobs:
           smtp_pw_v="$(printf '%s' "${smtp_pw_v}" | tr -d '[:space:]')"
           if [ -z "${smtp_pw_v}" ]; then
             echo "no password-reset email secret is visible to this workflow - the server .env is unchanged"
-            echo "::notice title=SMTP secret::not found - no value in repository secrets named SMTP_PASSWORD, SMTP_APP_PASSWORD, GMAIL_APP_PASSWORD, GMAIL_PASSWORD or APP_PASSWORD, so the .env was left alone"
+            echo "::notice title=SMTP secret::not found - no value in repository secrets named SMTP_PASSWORD, SMTP_APP_PASSWORD, GMAIL_APP_PASSWORD, GMAIL_PASSWORD or APP_PASSWORD, and none in the variables SMTP_PASSWORD, SMTP_APP_PASSWORD or GMAIL_APP_PASSWORD, so the .env was left alone"
           else
             echo "using the ${smtp_pw_src} secret (${#smtp_pw_v} characters, not printed)"
             echo "::notice title=SMTP secret::found as ${smtp_pw_src}, ${#smtp_pw_v} characters after removing spaces - writing the email settings to the server .env"
@@ -216,7 +222,7 @@ jobs:
                 echo "::error title=Could not write SMTP settings::POST ${REMOTE}/.env returned HTTP ${up}"
                 exit 1 ;;
             esac
-            unset smtp_pw_v SMTP_PASSWORD_VALUE SMTP_PASSWORD_ALT1 SMTP_PASSWORD_ALT2 SMTP_PASSWORD_ALT3 SMTP_PASSWORD_ALT4
+            unset smtp_pw_v SMTP_PASSWORD_VALUE SMTP_PASSWORD_ALT1 SMTP_PASSWORD_ALT2 SMTP_PASSWORD_ALT3 SMTP_PASSWORD_ALT4 SMTP_PASSWORD_VAR SMTP_APP_PASSWORD_VAR GMAIL_APP_PASSWORD_VAR
           fi
 
           # 3a. Report the live email settings. Names only for anything that could carry a
