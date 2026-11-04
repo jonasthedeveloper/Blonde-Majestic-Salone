@@ -184,15 +184,20 @@ jobs:
           else
             echo "password-reset email: NOT configured (unset:${absent:- none})"
             echo "::notice title=Password-reset email::NOT configured (unset:${absent:- none}) - reset requests are answered but no email is sent"
-            # Diagnostic for a save that landed somewhere else. Names and counts only.
-            echo ".env size: $(wc -c < /tmp/live.env 2>/dev/null || echo 0) bytes, $(wc -l < /tmp/live.env 2>/dev/null || echo 0) lines"
-            echo ".env keys: $(sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=.*/\1/p' /tmp/live.env 2>/dev/null | sort -u | tr '\n' ' ')"
+            # Diagnostic for a save that landed elsewhere. Names and counts only, surfaced
+            # as annotations so it is readable from the run without the job log.
+            diag_keys=$(sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=.*/\1/p' /tmp/live.env 2>/dev/null | sort -u | tr '\n' ' ')
+            diag_bytes=$(wc -c < /tmp/live.env 2>/dev/null || echo 0)
+            diag_lines=$(wc -l < /tmp/live.env 2>/dev/null || echo 0)
+            echo "live .env keys: ${diag_keys:-none} (${diag_bytes} bytes, ${diag_lines} lines)"
+            echo "::notice title=Live .env contents::keys present:${diag_keys:- none} (${diag_bytes} bytes, ${diag_lines} lines) - values are never printed"
+            others=""
             for p in "${HOME_DIR}/.env" "${REMOTE}/env" "${REMOTE}/.env.txt" "${REMOTE}/smtp.env" "${REMOTE}/mail.env"; do
               c=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${p}" || true)
-              echo "  other env file ${p} -> HTTP ${c}"
+              others="${others} ${p}=${c}"
             done
-            curl -sS "${AUTH[@]}" -o /tmp/proj.json "${BASE}/files/tree/?path=${REMOTE}" || true
-            python3 -c "import json;d=json.load(open('/tmp/proj.json',encoding='utf-8',errors='replace'));e=d if isinstance(d,list) else (d.get('files') or d.get('entries') or []);print('project root entries:',', '.join(sorted(str((x.get('name') or x.get('path')) if isinstance(x,dict) else x) for x in e)))" 2>/dev/null || echo "project root entries: unavailable"
+            echo "other env files:${others}"
+            echo "::notice title=Other env files::${others}"
           fi
 
           # 3b. Reset links must be built from a fixed origin, not from the request Host,
