@@ -178,6 +178,46 @@ jobs:
               echo "::warning title=Unexpected .env response::HTTP ${code}" ;;
           esac
 
+          # 2b. Fallback channel for the credential: a plain, non-hidden smtp.env file placed in
+          #     the project folder through the PythonAnywhere file browser (easier to create than
+          #     editing the hidden .env). Its SMTP_* values are merged into .env and the file is
+          #     then deleted, so the password is never left lying in a second place.
+          code=$(curl -sS -o /tmp/smtp.env -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${REMOTE}/smtp.env" || true)
+          if [ "${code}" = "200" ]; then
+            file_get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" /tmp/smtp.env 2>/dev/null | head -1 | tr -d '\r'; }
+            file_pw=$(file_get SMTP_PASSWORD | tr -d '[:space:]')
+            if [ -n "${file_pw}" ]; then
+              file_user=$(file_get SMTP_USERNAME); file_user="${file_user:-jonasconcepcion2023@gmail.com}"
+              file_host=$(file_get SMTP_HOST); file_host="${file_host:-smtp.gmail.com}"
+              file_port=$(file_get SMTP_PORT); file_port="${file_port:-587}"
+              file_from=$(file_get SMTP_FROM); file_from="${file_from:-${file_user}}"
+              file_tls=$(file_get SMTP_USE_TLS); file_tls="${file_tls:-1}"
+              curl -sS "${AUTH[@]}" -o /tmp/live.env "${BASE}/files/path${REMOTE}/.env" || true
+              {
+                grep -vE '^[[:space:]]*SMTP_(HOST|PORT|USERNAME|PASSWORD|FROM|USE_TLS)[[:space:]]*=' /tmp/live.env 2>/dev/null || true
+                printf 'SMTP_HOST=%s\nSMTP_PORT=%s\nSMTP_USERNAME=%s\nSMTP_PASSWORD=%s\nSMTP_FROM=%s\nSMTP_USE_TLS=%s\n' \
+                  "${file_host}" "${file_port}" "${file_user}" "${file_pw}" "${file_from}" "${file_tls}"
+              } > /tmp/live.env.new
+              up=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -F "content=@/tmp/live.env.new" \
+                    "${BASE}/files/path${REMOTE}/.env" || true)
+              case "${up}" in
+                200|201|204)
+                  echo "merged the SMTP settings from smtp.env into .env (values not printed)"
+                  echo "::notice title=Password-reset email::merged the settings from the uploaded smtp.env (${#file_pw} characters, host=${file_host}, port=${file_port}) - the file is being deleted"
+                  del=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X DELETE "${BASE}/files/path${REMOTE}/smtp.env" || true)
+                  echo "delete smtp.env -> HTTP ${del}"
+                  echo "::notice title=smtp.env cleanup::delete returned HTTP ${del} (200/204 means the uploaded copy is gone)" ;;
+                *)
+                  echo "::error title=Could not merge smtp.env::POST ${REMOTE}/.env returned HTTP ${up}"
+                  exit 1 ;;
+              esac
+              unset file_pw
+            else
+              echo "smtp.env exists but has no SMTP_PASSWORD line - nothing merged"
+              echo "::warning title=smtp.env incomplete::the uploaded smtp.env has no SMTP_PASSWORD value, so nothing was merged"
+            fi
+          fi
+
           # 2c. When the Gmail App Password is provided as a repository secret, write the email
           #     settings into the server .env for you. Other lines are preserved, existing
           #     SMTP_* lines are replaced so this is idempotent, and no value is ever echoed -
