@@ -339,7 +339,8 @@ jobs:
             tail -n 5 /tmp/mail.log | tr -d '\r'
             echo "::notice title=Password-reset email failures::$(tail -n 1 /tmp/mail.log | tr -d '\r')"
           else
-            echo "no data/mail.log on the server - no reset email has failed to send"
+            echo "data/mail.log not readable (HTTP ${code}) - no reset email has failed to send"
+            echo "::notice title=Password-reset email failures::none recorded (data/mail.log HTTP ${code}) - no send has failed so far"
           fi
 
           exit 0
