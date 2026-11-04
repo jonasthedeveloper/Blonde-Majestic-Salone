@@ -162,29 +162,37 @@ jobs:
 
           # 3a. Report the live email settings. Names only for anything that could carry a
           #     credential; SMTP_HOST/PORT/USE_TLS are printed because they are not secret.
+          #     Leading whitespace and CRLF endings are tolerated - the app strips both, so a
+          #     stricter check here would wrongly report a usable .env as unconfigured.
           curl -sS "${AUTH[@]}" -o /tmp/live.env "${BASE}/files/path${REMOTE}/.env" || true
+          env_val() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" /tmp/live.env 2>/dev/null | head -1 | tr -d '\r'; }
+          env_set() { [ -n "$(env_val "$1")" ]; }
           present=""; absent=""
           for k in SECURE_COOKIES PUBLIC_BASE_URL SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM SMTP_USE_TLS; do
-            if grep -q "^${k}=..*" /tmp/live.env 2>/dev/null; then
+            if env_set "$k"; then
               present="${present} ${k}"
             else
               absent="${absent} ${k}"
             fi
           done
-          mail_host=$(grep -m1 -E '^SMTP_HOST=' /tmp/live.env 2>/dev/null | cut -d= -f2- | tr -d '\r' || true)
-          mail_port=$(grep -m1 -E '^SMTP_PORT=' /tmp/live.env 2>/dev/null | cut -d= -f2- | tr -d '\r' || true)
-          mail_tls=$(grep -m1 -E '^SMTP_USE_TLS=' /tmp/live.env 2>/dev/null | cut -d= -f2- | tr -d '\r' || true)
+          mail_host="$(env_val SMTP_HOST)"; mail_port="$(env_val SMTP_PORT)"; mail_tls="$(env_val SMTP_USE_TLS)"
           echo "live .env - set:${present:- none} - unset:${absent:- none}"
           echo "SMTP host=${mail_host:-none} port=${mail_port:-none} starttls=${mail_tls:-none}"
-          if grep -q '^SMTP_HOST=..*' /tmp/live.env 2>/dev/null \
-             && grep -q '^SMTP_USERNAME=..*' /tmp/live.env 2>/dev/null \
-             && grep -q '^SMTP_PASSWORD=..*' /tmp/live.env 2>/dev/null \
-             && grep -q '^SMTP_FROM=..*' /tmp/live.env 2>/dev/null; then
+          if env_set SMTP_HOST && env_set SMTP_USERNAME && env_set SMTP_PASSWORD && env_set SMTP_FROM; then
             echo "password-reset email: configured on the server (host=${mail_host}, port=${mail_port:-587}, starttls=${mail_tls:-1})"
             echo "::notice title=Password-reset email::configured (host=${mail_host}, port=${mail_port:-587}) - reset requests will send a real email"
           else
             echo "password-reset email: NOT configured (unset:${absent:- none})"
             echo "::notice title=Password-reset email::NOT configured (unset:${absent:- none}) - reset requests are answered but no email is sent"
+            # Diagnostic for a save that landed somewhere else. Names and counts only.
+            echo ".env size: $(wc -c < /tmp/live.env 2>/dev/null || echo 0) bytes, $(wc -l < /tmp/live.env 2>/dev/null || echo 0) lines"
+            echo ".env keys: $(sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=.*/\1/p' /tmp/live.env 2>/dev/null | sort -u | tr '\n' ' ')"
+            for p in "${HOME_DIR}/.env" "${REMOTE}/env" "${REMOTE}/.env.txt" "${REMOTE}/smtp.env" "${REMOTE}/mail.env"; do
+              c=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${p}" || true)
+              echo "  other env file ${p} -> HTTP ${c}"
+            done
+            curl -sS "${AUTH[@]}" -o /tmp/proj.json "${BASE}/files/tree/?path=${REMOTE}" || true
+            python3 -c "import json;d=json.load(open('/tmp/proj.json',encoding='utf-8',errors='replace'));e=d if isinstance(d,list) else (d.get('files') or d.get('entries') or []);print('project root entries:',', '.join(sorted(str((x.get('name') or x.get('path')) if isinstance(x,dict) else x) for x in e)))" 2>/dev/null || echo "project root entries: unavailable"
           fi
 
           # 3b. Reset links must be built from a fixed origin, not from the request Host,
