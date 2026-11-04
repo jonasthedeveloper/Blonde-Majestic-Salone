@@ -39,6 +39,10 @@ jobs:
           # the sender defaults to the salon's Gmail address and can be overridden. Values
           # are masked by GitHub and are never echoed by this workflow.
           SMTP_PASSWORD_VALUE: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_PASSWORD_ALT1: ${{ secrets.SMTP_APP_PASSWORD }}
+          SMTP_PASSWORD_ALT2: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SMTP_PASSWORD_ALT3: ${{ secrets.GMAIL_PASSWORD }}
+          SMTP_PASSWORD_ALT4: ${{ secrets.APP_PASSWORD }}
           SMTP_USERNAME_VALUE: ${{ secrets.SMTP_USERNAME }}
           SMTP_HOST_VALUE: ${{ secrets.SMTP_HOST }}
           SMTP_PORT_VALUE: ${{ secrets.SMTP_PORT }}
@@ -168,12 +172,26 @@ jobs:
               echo "::warning title=Unexpected .env response::HTTP ${code}" ;;
           esac
 
-          # 2c. When SMTP_PASSWORD is provided as a repository secret, write the email settings
-          #     into the server .env for you. Other lines are preserved, existing SMTP_* lines
-          #     are replaced so this is idempotent, and no value is ever echoed.
-          if [ -z "${SMTP_PASSWORD_VALUE:-}" ]; then
-            echo "no SMTP_PASSWORD repository secret - leaving the server .env email settings as they are"
+          # 2c. When the Gmail App Password is provided as a repository secret, write the email
+          #     settings into the server .env for you. Other lines are preserved, existing
+          #     SMTP_* lines are replaced so this is idempotent, and no value is ever echoed -
+          #     only the secret's name and length are reported. The secret is accepted under
+          #     SMTP_PASSWORD or a common alternative name, and Google's display spaces are
+          #     stripped, because a pasted "abcd efgh ijkl mnop" would fail to authenticate.
+          smtp_pw_v="${SMTP_PASSWORD_VALUE:-}"; smtp_pw_src="SMTP_PASSWORD"
+          for alt in "SMTP_APP_PASSWORD:${SMTP_PASSWORD_ALT1:-}" "GMAIL_APP_PASSWORD:${SMTP_PASSWORD_ALT2:-}" "GMAIL_PASSWORD:${SMTP_PASSWORD_ALT3:-}" "APP_PASSWORD:${SMTP_PASSWORD_ALT4:-}"; do
+            alt_name="${alt%%:*}"; alt_val="${alt#*:}"
+            if [ -z "${smtp_pw_v}" ] && [ -n "${alt_val}" ]; then
+              smtp_pw_v="${alt_val}"; smtp_pw_src="${alt_name}"
+            fi
+          done
+          smtp_pw_v="$(printf '%s' "${smtp_pw_v}" | tr -d '[:space:]')"
+          if [ -z "${smtp_pw_v}" ]; then
+            echo "no password-reset email secret is visible to this workflow - the server .env is unchanged"
+            echo "::notice title=SMTP secret::not found - no value in repository secrets named SMTP_PASSWORD, SMTP_APP_PASSWORD, GMAIL_APP_PASSWORD, GMAIL_PASSWORD or APP_PASSWORD, so the .env was left alone"
           else
+            echo "using the ${smtp_pw_src} secret (${#smtp_pw_v} characters, not printed)"
+            echo "::notice title=SMTP secret::found as ${smtp_pw_src}, ${#smtp_pw_v} characters after removing spaces - writing the email settings to the server .env"
             smtp_user_v="${SMTP_USERNAME_VALUE:-jonasconcepcion2023@gmail.com}"
             smtp_host_v="${SMTP_HOST_VALUE:-smtp.gmail.com}"
             smtp_port_v="${SMTP_PORT_VALUE:-587}"
@@ -184,7 +202,7 @@ jobs:
               printf 'SMTP_HOST=%s\n' "${smtp_host_v}"
               printf 'SMTP_PORT=%s\n' "${smtp_port_v}"
               printf 'SMTP_USERNAME=%s\n' "${smtp_user_v}"
-              printf 'SMTP_PASSWORD=%s\n' "${SMTP_PASSWORD_VALUE}"
+              printf 'SMTP_PASSWORD=%s\n' "${smtp_pw_v}"
               printf 'SMTP_FROM=%s\n' "${smtp_from_v}"
               printf 'SMTP_USE_TLS=%s\n' "${SMTP_USE_TLS_VALUE:-1}"
             } > /tmp/live.env.new
@@ -198,7 +216,7 @@ jobs:
                 echo "::error title=Could not write SMTP settings::POST ${REMOTE}/.env returned HTTP ${up}"
                 exit 1 ;;
             esac
-            unset SMTP_PASSWORD_VALUE
+            unset smtp_pw_v SMTP_PASSWORD_VALUE SMTP_PASSWORD_ALT1 SMTP_PASSWORD_ALT2 SMTP_PASSWORD_ALT3 SMTP_PASSWORD_ALT4
           fi
 
           # 3a. Report the live email settings. Names only for anything that could carry a
