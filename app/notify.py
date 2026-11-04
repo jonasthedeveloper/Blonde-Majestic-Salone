@@ -78,9 +78,22 @@ def email_ready():
     return bool(config.SMTP_HOST and config.SMTP_FROM)
 
 
+def _log_mail_failure(detail):
+    """One line per failed send in data/mail.log, so an SMTP problem can be diagnosed from
+    the host (PythonAnywhere) without opening its console. Writes only the local time, the
+    SMTP host and an exception type - never a token, message body or credential."""
+    try:
+        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(config.DATA_DIR / "mail.log", "a", encoding="utf-8") as f:
+            f.write("%s\t%s\t%s\n" % (db.now_str(), config.SMTP_HOST or "-", detail))
+    except Exception:
+        pass
+
+
 def _send_email(to, subject, text_body, html_body):
     """Send one message. Returns (ok, detail); detail never contains the message body."""
     if not email_ready():
+        _log_mail_failure("smtp-not-configured")
         return False, "smtp-not-configured"
     msg = EmailMessage()
     msg["From"] = config.SMTP_FROM
@@ -105,6 +118,7 @@ def _send_email(to, subject, text_body, html_body):
         return True, "sent"
     except Exception as e:
         # Type only - never the server response, credentials or the message itself.
+        _log_mail_failure(type(e).__name__)
         return False, type(e).__name__
 
 

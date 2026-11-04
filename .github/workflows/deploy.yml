@@ -160,18 +160,32 @@ jobs:
               echo "::warning title=Unexpected .env response::HTTP ${code}" ;;
           esac
 
-          # 3a. Report which optional settings the live .env has - names only, never values.
+          # 3a. Report the live email settings. Names only for anything that could carry a
+          #     credential; SMTP_HOST/PORT/USE_TLS are printed because they are not secret.
           curl -sS "${AUTH[@]}" -o /tmp/live.env "${BASE}/files/path${REMOTE}/.env" || true
           present=""; absent=""
-          for k in SECURE_COOKIES PUBLIC_BASE_URL SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_FROM; do
+          for k in SECURE_COOKIES PUBLIC_BASE_URL SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM SMTP_USE_TLS; do
             if grep -q "^${k}=..*" /tmp/live.env 2>/dev/null; then
               present="${present} ${k}"
             else
               absent="${absent} ${k}"
             fi
           done
+          mail_host=$(grep -m1 -E '^SMTP_HOST=' /tmp/live.env 2>/dev/null | cut -d= -f2- | tr -d '\r' || true)
+          mail_port=$(grep -m1 -E '^SMTP_PORT=' /tmp/live.env 2>/dev/null | cut -d= -f2- | tr -d '\r' || true)
+          mail_tls=$(grep -m1 -E '^SMTP_USE_TLS=' /tmp/live.env 2>/dev/null | cut -d= -f2- | tr -d '\r' || true)
           echo "live .env - set:${present:- none} - unset:${absent:- none}"
-          echo "::notice title=Live server settings::set:${present:- none} | unset:${absent:- none} (password-reset emails need SMTP_HOST and SMTP_USERNAME/SMTP_FROM)"
+          echo "SMTP host=${mail_host:-none} port=${mail_port:-none} starttls=${mail_tls:-none}"
+          if grep -q '^SMTP_HOST=..*' /tmp/live.env 2>/dev/null \
+             && grep -q '^SMTP_USERNAME=..*' /tmp/live.env 2>/dev/null \
+             && grep -q '^SMTP_PASSWORD=..*' /tmp/live.env 2>/dev/null \
+             && grep -q '^SMTP_FROM=..*' /tmp/live.env 2>/dev/null; then
+            echo "password-reset email: configured on the server (host=${mail_host}, port=${mail_port:-587}, starttls=${mail_tls:-1})"
+            echo "::notice title=Password-reset email::configured (host=${mail_host}, port=${mail_port:-587}) - reset requests will send a real email"
+          else
+            echo "password-reset email: NOT configured (unset:${absent:- none})"
+            echo "::notice title=Password-reset email::NOT configured (unset:${absent:- none}) - reset requests are answered but no email is sent"
+          fi
 
           # 3b. Reset links must be built from a fixed origin, not from the request Host,
           #     so a crafted Host header can never point a password-reset email elsewhere.
@@ -228,10 +242,26 @@ jobs:
             status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://${PA_DOMAIN}/api/public" || true)
             if [ "$status" = "200" ]; then
               echo "live: https://${PA_DOMAIN} answered 200"
-              exit 0
+              break
             fi
             sleep 5
           done
 
-          echo "::error title=Site did not answer after reload::https://${PA_DOMAIN}/api/public returned ${status} (reload HTTP ${reload})"
-          exit 1
+          if [ "${status}" != "200" ]; then
+            echo "::error title=Site did not answer after reload::https://${PA_DOMAIN}/api/public returned ${status} (reload HTTP ${reload})"
+            exit 1
+          fi
+
+          # 6. A reset email that fails to send writes one line (time, SMTP host, exception
+          #    type - never a token, body or credential) to data/mail.log. Printing its tail
+          #    makes an SMTP login problem diagnosable here instead of in the PA console.
+          code=$(curl -sS -o /tmp/mail.log -w '%{http_code}' "${AUTH[@]}" "${BASE}/files/path${REMOTE}/data/mail.log" || true)
+          if [ "${code}" = "200" ]; then
+            echo "recent password-reset email failures (newest last):"
+            tail -n 5 /tmp/mail.log | tr -d '\r'
+            echo "::notice title=Password-reset email failures::$(tail -n 1 /tmp/mail.log | tr -d '\r')"
+          else
+            echo "no data/mail.log on the server - no reset email has failed to send"
+          fi
+
+          exit 0
