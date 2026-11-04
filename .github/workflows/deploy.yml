@@ -35,6 +35,14 @@ jobs:
           PA_USERNAME: ${{ secrets.PA_USERNAME }}
           PA_API_TOKEN: ${{ secrets.PA_API_TOKEN }}
           PA_DOMAIN: ${{ secrets.PA_DOMAIN }}
+          # Optional password-reset email settings. SMTP_PASSWORD is the Gmail App Password;
+          # the sender defaults to the salon's Gmail address and can be overridden. Values
+          # are masked by GitHub and are never echoed by this workflow.
+          SMTP_PASSWORD_VALUE: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_USERNAME_VALUE: ${{ secrets.SMTP_USERNAME }}
+          SMTP_HOST_VALUE: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT_VALUE: ${{ secrets.SMTP_PORT }}
+          SMTP_FROM_VALUE: ${{ secrets.SMTP_FROM }}
         run: |
           set -euo pipefail
 
@@ -159,6 +167,39 @@ jobs:
             *)
               echo "::warning title=Unexpected .env response::HTTP ${code}" ;;
           esac
+
+          # 2c. When SMTP_PASSWORD is provided as a repository secret, write the email settings
+          #     into the server .env for you. Other lines are preserved, existing SMTP_* lines
+          #     are replaced so this is idempotent, and no value is ever echoed.
+          if [ -z "${SMTP_PASSWORD_VALUE:-}" ]; then
+            echo "no SMTP_PASSWORD repository secret - leaving the server .env email settings as they are"
+          else
+            smtp_user_v="${SMTP_USERNAME_VALUE:-jonasconcepcion2023@gmail.com}"
+            smtp_host_v="${SMTP_HOST_VALUE:-smtp.gmail.com}"
+            smtp_port_v="${SMTP_PORT_VALUE:-587}"
+            smtp_from_v="${SMTP_FROM_VALUE:-${smtp_user_v}}"
+            curl -sS "${AUTH[@]}" -o /tmp/live.env "${BASE}/files/path${REMOTE}/.env" || true
+            {
+              grep -vE '^[[:space:]]*SMTP_(HOST|PORT|USERNAME|PASSWORD|FROM|USE_TLS)[[:space:]]*=' /tmp/live.env 2>/dev/null || true
+              printf 'SMTP_HOST=%s\n' "${smtp_host_v}"
+              printf 'SMTP_PORT=%s\n' "${smtp_port_v}"
+              printf 'SMTP_USERNAME=%s\n' "${smtp_user_v}"
+              printf 'SMTP_PASSWORD=%s\n' "${SMTP_PASSWORD_VALUE}"
+              printf 'SMTP_FROM=%s\n' "${smtp_from_v}"
+              printf 'SMTP_USE_TLS=%s\n' "${SMTP_USE_TLS_VALUE:-1}"
+            } > /tmp/live.env.new
+            up=$(curl -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -F "content=@/tmp/live.env.new" \
+                  "${BASE}/files/path${REMOTE}/.env" || true)
+            case "${up}" in
+              200|201|204)
+                echo "wrote the password-reset email settings to ${REMOTE}/.env (values not printed)"
+                echo "::notice title=Password-reset email::settings written to the server .env from repository secrets (host=${smtp_host_v}, port=${smtp_port_v}) - values never printed" ;;
+              *)
+                echo "::error title=Could not write SMTP settings::POST ${REMOTE}/.env returned HTTP ${up}"
+                exit 1 ;;
+            esac
+            unset SMTP_PASSWORD_VALUE
+          fi
 
           # 3a. Report the live email settings. Names only for anything that could carry a
           #     credential; SMTP_HOST/PORT/USE_TLS are printed because they are not secret.
